@@ -388,7 +388,12 @@ export function InstallStepsButtons({
   return (
     <>
       {stepIndex > 0 && (
-        <Button variant="outline" disabled={isLoading} onClick={handleBack} className="flex-1 md:flex-initial">
+        <Button
+          variant="outline"
+          disabled={isLoading}
+          onClick={handleBack}
+          className="flex-1 md:flex-initial"
+        >
           Back
         </Button>
       )}
