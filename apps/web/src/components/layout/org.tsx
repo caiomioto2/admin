@@ -1,4 +1,4 @@
-import { Locator, SDKProvider } from "@deco/sdk";
+import { Locator, SDKProvider, useTeam } from "@deco/sdk";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -59,6 +59,17 @@ export function BaseRouteLayout({ children }: { children: ReactNode }) {
 function OrgDocumentTitleUpdater() {
   useOrgDocumentTitle();
   return null;
+}
+
+function SetupOrgDialogWrapper() {
+  const { org } = useParams();
+  const { data: team } = useTeam(org || "");
+
+  if (!org || !team) return null;
+
+  return (
+    <SetupOrgDialog orgSlug={org} currentOrgName={team.name} orgId={team.id} />
+  );
 }
 
 // TODO: Register activity for org so we can order them by latest accessed later

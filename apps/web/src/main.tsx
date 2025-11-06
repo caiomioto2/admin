@@ -152,6 +152,16 @@ const MagicLinkCallback = lazy(() =>
   ),
 );
 
+const OnboardingQuestions = lazy(() =>
+  wrapWithUILoadingFallback(import("./components/onboarding/onboarding.tsx")),
+);
+
+const JoinOrganizations = lazy(() =>
+  wrapWithUILoadingFallback(
+    import("./components/onboarding/join-organizations.tsx"),
+  ),
+);
+
 const Members = lazy(() =>
   wrapWithUILoadingFallback(import("./components/settings/members/index.tsx")),
 );
@@ -360,6 +370,14 @@ const router = createBrowserRouter([
       {
         path: "/login/magiclink/callback",
         Component: MagicLinkCallback,
+      },
+      {
+        path: "/onboarding",
+        Component: OnboardingQuestions,
+      },
+      {
+        path: "/onboarding/join",
+        Component: JoinOrganizations,
       },
       {
         path: "/sales-deck",
