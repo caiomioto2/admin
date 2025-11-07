@@ -1065,6 +1065,15 @@ export function AgenticChatProvider({
   // Track tool results and open tabs immediately as they become available during streaming
   const processedToolCallsRef = useRef<Set<string>>(new Set());
 
+  // Clear processedToolCallsRef when thread changes or on unmount to prevent memory leaks
+  useEffect(() => {
+    processedToolCallsRef.current = new Set();
+
+    return () => {
+      processedToolCallsRef.current.clear();
+    };
+  }, [threadId]);
+
   useEffect(() => {
     if (!addTab || !setActiveTab) return;
 
