@@ -283,62 +283,63 @@ export function ThreadManagerProvider({
 
   const addTab = useCallback(
     (tab: Omit<CanvasTab, "id">) => {
-      const thread = state.threads[activeThreadId];
-      if (!thread) return;
+      updateState((prev) => {
+        const thread = prev.threads[activeThreadId];
+        if (!thread) return prev;
 
-      const threadTabs = thread.tabs || [];
+        const threadTabs = thread.tabs || [];
 
-      // Check for duplicates (resourceUri uniquely identifies a tab)
-      const existingTabIndex = threadTabs.findIndex(
-        (t) => t.resourceUri === tab.resourceUri,
-      );
+        // Check for duplicates (resourceUri uniquely identifies a tab)
+        const existingTabIndex = threadTabs.findIndex(
+          (t) => t.resourceUri === tab.resourceUri,
+        );
 
-      if (existingTabIndex !== -1) {
-        const existingTab = threadTabs[existingTabIndex];
+        if (existingTabIndex !== -1) {
+          const existingTab = threadTabs[existingTabIndex];
 
-        // Update the existing tab's metadata (title, icon, type)
-        const updatedTab: CanvasTab = {
-          ...existingTab,
-          title: tab.title,
-          icon: tab.icon,
-          type: tab.type,
-        };
+          // Update the existing tab's metadata (title, icon, type)
+          const updatedTab: CanvasTab = {
+            ...existingTab,
+            title: tab.title,
+            icon: tab.icon,
+            type: tab.type,
+          };
 
-        const updatedTabs = [...threadTabs];
-        updatedTabs[existingTabIndex] = updatedTab;
+          const updatedTabs = [...threadTabs];
+          updatedTabs[existingTabIndex] = updatedTab;
 
-        updateState((prev) => ({
+          return {
+            ...prev,
+            threads: {
+              ...prev.threads,
+              [activeThreadId]: {
+                ...thread,
+                tabs: updatedTabs,
+                activeTabId: existingTab.id,
+                updatedAt: Date.now(),
+              },
+            },
+          };
+        }
+
+        const newTab: CanvasTab = { ...tab, id: crypto.randomUUID() };
+        const updatedTabs = [...threadTabs, newTab];
+
+        return {
           ...prev,
           threads: {
             ...prev.threads,
             [activeThreadId]: {
               ...thread,
               tabs: updatedTabs,
-              activeTabId: existingTab.id,
+              activeTabId: newTab.id,
               updatedAt: Date.now(),
             },
           },
-        }));
-        return;
-      }
-
-      const newTab: CanvasTab = { ...tab, id: crypto.randomUUID() };
-      const updatedTabs = [...threadTabs, newTab];
-
-      updateState((prev) => ({
-        ...prev,
-        threads: {
-          ...prev.threads,
-          [activeThreadId]: {
-            ...thread,
-            tabs: updatedTabs,
-            activeTabId: newTab.id,
-            updatedAt: Date.now(),
-          },
-        },
-      }));
+        };
+      });
     },
-    [activeThreadId, state.threads, updateState],
+    [activeThreadId, updateState],
   );
 
   const removeTab = useCallback(

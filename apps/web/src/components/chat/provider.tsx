@@ -491,6 +491,13 @@ export function AgenticChatProvider({
 
   // Reactive mutation for appending messages
   const appendMessagesMutation = useAppendThreadMessage();
+  const { createThread } = useThreadManager();
+  const { setThreadState } = useDecopilotThread();
+  const { data: integrations = [] } = useIntegrations();
+  const threadManager = useThreadManagerOptional();
+  const addTab = threadManager?.addTab;
+  const setActiveTab = threadManager?.setActiveTab;
+  const tabs = threadManager?.tabs ?? [];
 
   const [state, dispatch] = useReducer(chatStateReducer, {
     finishReason: null,
@@ -725,6 +732,8 @@ export function AgenticChatProvider({
           handleReadCheckpointFromPart(info, toolDeps);
           handleUpdateOrCreateFromPart(info, toolDeps);
 
+          let resourceUri: string | null = null;
+
           // Extract resource URI from CALL_TOOL parts
           if (info.toolName === "CALL_TOOL" && info.args) {
             // The args from CALL_TOOL are the input to the called tool
@@ -740,7 +749,6 @@ export function AgenticChatProvider({
 
             // Try to get URI from the nested tool arguments
             const nestedArgs = callToolArgs?.params?.arguments;
-            let resourceUri: string | null = null;
 
             if (nestedArgs && typeof nestedArgs === "object") {
               const maybeUri =
@@ -753,10 +761,50 @@ export function AgenticChatProvider({
             if (!resourceUri && info.output?.structuredContent?.uri) {
               resourceUri = info.output.structuredContent.uri;
             }
+          } else if (isResourceUpdateOrCreateTool(info.toolName)) {
+            // Handle direct resource tool calls (not wrapped in CALL_TOOL)
+            resourceUri = extractResourceUriFromInput(info.args);
 
-            // Add to set if found
-            if (resourceUri) {
-              resourcesToOpen.add(resourceUri);
+            // For CREATE operations, check output if no URI in input
+            if (!resourceUri && info.output?.structuredContent?.uri) {
+              resourceUri = info.output.structuredContent.uri;
+            }
+          }
+
+          // Add to set if found
+          if (resourceUri) {
+            resourcesToOpen.add(resourceUri);
+          }
+        }
+
+        // Open tabs for CREATE operations (where URI is only in output, not input)
+        // UPDATE operations are already handled in onToolCall
+        if (addTab && setActiveTab) {
+          for (const resourceUri of resourcesToOpen) {
+            // Check if tab already exists
+            const existingTab = tabs.find(
+              (tab) => tab.type === "detail" && tab.resourceUri === resourceUri,
+            );
+
+            if (existingTab) {
+              // Tab exists, just activate it
+              setActiveTab(existingTab.id);
+            } else {
+              // Extract integration ID from resource URI (format: rsc://integration-id/resource-name/resource-id)
+              const integrationId = resourceUri
+                .replace(/^rsc:\/\//, "")
+                .split("/")[0];
+              const integration = integrations.find(
+                (i) => i.id === integrationId,
+              );
+
+              // Create new tab (addTab automatically activates it)
+              addTab({
+                type: "detail",
+                resourceUri: resourceUri,
+                title: resourceUri.split("/").pop() || "Resource",
+                icon: integration?.icon,
+              });
             }
           }
         }
@@ -807,9 +855,60 @@ export function AgenticChatProvider({
         window.dispatchEvent(new CustomEvent("theme-updated"));
       }
 
-      // Screenshot tooling removed
+      // Open tabs immediately for resource operations (if we have URI in input)
+      if (addTab && setActiveTab && toolCall.toolName) {
+        let resourceUri: string | null = null;
 
-      // Resource update handling moved to onFinish
+        // Handle CALL_TOOL wrapper
+        if (toolCall.toolName === "CALL_TOOL" && toolCall.input) {
+          const callToolArgs = toolCall.input as
+            | {
+                id?: string;
+                params?: {
+                  name?: string;
+                  arguments?: Record<string, unknown>;
+                };
+              }
+            | undefined;
+
+          const nestedArgs = callToolArgs?.params?.arguments;
+          if (nestedArgs && typeof nestedArgs === "object") {
+            const maybeUri =
+              (nestedArgs as { uri?: unknown; resource?: unknown }).uri ??
+              (nestedArgs as { resource?: unknown }).resource;
+            resourceUri = typeof maybeUri === "string" ? maybeUri : null;
+          }
+        } else if (isResourceUpdateOrCreateTool(toolCall.toolName)) {
+          // Handle direct resource tool calls
+          resourceUri = extractResourceUriFromInput(toolCall.input);
+        }
+
+        // Only open tab if we have a URI (UPDATE operations)
+        // CREATE operations will be handled in onFinish when output is available
+        if (resourceUri) {
+          const existingTab = tabs.find(
+            (tab) => tab.type === "detail" && tab.resourceUri === resourceUri,
+          );
+
+          if (existingTab) {
+            setActiveTab(existingTab.id);
+          } else {
+            const integrationId = resourceUri
+              .replace(/^rsc:\/\//, "")
+              .split("/")[0];
+            const integration = integrations.find(
+              (i) => i.id === integrationId,
+            );
+
+            addTab({
+              type: "detail",
+              resourceUri: resourceUri,
+              title: resourceUri.split("/").pop() || "Resource",
+              icon: integration?.icon,
+            });
+          }
+        }
+      }
     },
   });
 
