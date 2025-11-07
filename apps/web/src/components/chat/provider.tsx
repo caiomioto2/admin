@@ -9,9 +9,11 @@ import {
   KEYS,
   Locator,
   useAppendThreadMessage,
+  useIntegrations,
   useSDK,
   WELL_KNOWN_AGENTS,
   type Agent,
+  type Integration,
   type MessageMetadata,
 } from "@deco/sdk";
 import {
@@ -59,6 +61,7 @@ import {
 } from "../../stores/resource-version-history/utils.ts";
 import { IMAGE_REGEXP, openPreviewPanel } from "../chat/utils/preview.ts";
 import { useThreadContext } from "../decopilot/thread-context-provider.tsx";
+import { useThreadManager } from "../decopilot/thread-context-manager.tsx";
 
 // Preload notification audio at module level for instant playback
 const notificationAudio = (() => {
@@ -488,16 +491,11 @@ export function AgenticChatProvider({
   const triggerToolCallListeners = useTriggerToolCallListeners();
   const queryClient = useQueryClient();
   const { locator } = useSDK();
+  const { addTab, setActiveTab, tabs } = useThreadManager();
+  const { data: integrations = [] } = useIntegrations();
 
   // Reactive mutation for appending messages
   const appendMessagesMutation = useAppendThreadMessage();
-  const { createThread } = useThreadManager();
-  const { setThreadState } = useDecopilotThread();
-  const { data: integrations = [] } = useIntegrations();
-  const threadManager = useThreadManagerOptional();
-  const addTab = threadManager?.addTab;
-  const setActiveTab = threadManager?.setActiveTab;
-  const tabs = threadManager?.tabs ?? [];
 
   const [state, dispatch] = useReducer(chatStateReducer, {
     finishReason: null,
@@ -722,91 +720,12 @@ export function AgenticChatProvider({
           threadId,
         };
 
-        // Track unique resource URIs to open in tabs
-        const resourcesToOpen = new Set<string>();
-
         for (const part of result.message.parts) {
           const info = normalizeToolPart(part);
           if (!info.isTool) continue;
           if (info.state !== "output-available" || !info.toolName) continue;
           handleReadCheckpointFromPart(info, toolDeps);
           handleUpdateOrCreateFromPart(info, toolDeps);
-
-          let resourceUri: string | null = null;
-
-          // Extract resource URI from CALL_TOOL parts
-          if (info.toolName === "CALL_TOOL" && info.args) {
-            // The args from CALL_TOOL are the input to the called tool
-            const callToolArgs = info.args as
-              | {
-                  id?: string;
-                  params?: {
-                    name?: string;
-                    arguments?: Record<string, unknown>;
-                  };
-                }
-              | undefined;
-
-            // Try to get URI from the nested tool arguments
-            const nestedArgs = callToolArgs?.params?.arguments;
-
-            if (nestedArgs && typeof nestedArgs === "object") {
-              const maybeUri =
-                (nestedArgs as { uri?: unknown; resource?: unknown }).uri ??
-                (nestedArgs as { resource?: unknown }).resource;
-              resourceUri = typeof maybeUri === "string" ? maybeUri : null;
-            }
-
-            // For CREATE operations, check output
-            if (!resourceUri && info.output?.structuredContent?.uri) {
-              resourceUri = info.output.structuredContent.uri;
-            }
-          } else if (isResourceUpdateOrCreateTool(info.toolName)) {
-            // Handle direct resource tool calls (not wrapped in CALL_TOOL)
-            resourceUri = extractResourceUriFromInput(info.args);
-
-            // For CREATE operations, check output if no URI in input
-            if (!resourceUri && info.output?.structuredContent?.uri) {
-              resourceUri = info.output.structuredContent.uri;
-            }
-          }
-
-          // Add to set if found
-          if (resourceUri) {
-            resourcesToOpen.add(resourceUri);
-          }
-        }
-
-        // Open tabs for CREATE operations (where URI is only in output, not input)
-        // UPDATE operations are already handled in onToolCall
-        if (addTab && setActiveTab) {
-          for (const resourceUri of resourcesToOpen) {
-            // Check if tab already exists
-            const existingTab = tabs.find(
-              (tab) => tab.type === "detail" && tab.resourceUri === resourceUri,
-            );
-
-            if (existingTab) {
-              // Tab exists, just activate it
-              setActiveTab(existingTab.id);
-            } else {
-              // Extract integration ID from resource URI (format: rsc://integration-id/resource-name/resource-id)
-              const integrationId = resourceUri
-                .replace(/^rsc:\/\//, "")
-                .split("/")[0];
-              const integration = integrations.find(
-                (i) => i.id === integrationId,
-              );
-
-              // Create new tab (addTab automatically activates it)
-              addTab({
-                type: "detail",
-                resourceUri: resourceUri,
-                title: resourceUri.split("/").pop() || "Resource",
-                icon: integration?.icon,
-              });
-            }
-          }
         }
       }
     },
@@ -897,7 +816,7 @@ export function AgenticChatProvider({
               .replace(/^rsc:\/\//, "")
               .split("/")[0];
             const integration = integrations.find(
-              (i) => i.id === integrationId,
+              (i: Integration) => i.id === integrationId,
             );
 
             addTab({
@@ -1142,6 +1061,98 @@ export function AgenticChatProvider({
     onAutoSendComplete,
     wrappedSendMessage,
   ]);
+
+  // Track tool results and open tabs immediately as they become available during streaming
+  const processedToolCallsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!addTab || !setActiveTab) return;
+
+    // Find all tool results in the latest assistant message
+    const lastAssistantMessage = chat.messages.findLast(
+      (msg) => msg.role === "assistant",
+    );
+
+    if (!lastAssistantMessage?.parts) return;
+
+    for (const part of lastAssistantMessage.parts) {
+      const info = normalizeToolPart(part);
+      if (!info.isTool || !info.toolCallId) continue;
+      if (info.state !== "output-available" || !info.toolName) continue;
+
+      // Skip if already processed
+      if (processedToolCallsRef.current.has(info.toolCallId)) continue;
+
+      let resourceUri: string | null = null;
+
+      // Extract resource URI from CALL_TOOL parts
+      if (info.toolName === "CALL_TOOL" && info.args) {
+        const callToolArgs = info.args as
+          | {
+              id?: string;
+              params?: {
+                name?: string;
+                arguments?: Record<string, unknown>;
+              };
+            }
+          | undefined;
+
+        const nestedArgs = callToolArgs?.params?.arguments;
+
+        if (nestedArgs && typeof nestedArgs === "object") {
+          const maybeUri =
+            (nestedArgs as { uri?: unknown; resource?: unknown }).uri ??
+            (nestedArgs as { resource?: unknown }).resource;
+          resourceUri = typeof maybeUri === "string" ? maybeUri : null;
+        }
+
+        // For CREATE operations, check output
+        if (!resourceUri && info.output?.structuredContent?.uri) {
+          resourceUri = info.output.structuredContent.uri;
+        }
+      } else if (isResourceUpdateOrCreateTool(info.toolName)) {
+        // Handle direct resource tool calls (not wrapped in CALL_TOOL)
+        resourceUri = extractResourceUriFromInput(info.args);
+
+        // For CREATE operations, check output if no URI in input
+        if (!resourceUri && info.output?.structuredContent?.uri) {
+          resourceUri = info.output.structuredContent.uri;
+        }
+      }
+
+      // Open tab if we have a URI
+      if (resourceUri) {
+        // Mark as processed
+        processedToolCallsRef.current.add(info.toolCallId);
+
+        // Check if tab already exists
+        const existingTab = tabs.find(
+          (tab) => tab.type === "detail" && tab.resourceUri === resourceUri,
+        );
+
+        if (existingTab) {
+          // Tab exists, just activate it
+          setActiveTab(existingTab.id);
+        } else {
+          // Extract integration ID from resource URI
+          const integrationId = resourceUri
+            .replace(/^rsc:\/\//, "")
+            .split("/")[0];
+          const integration = integrations.find(
+            (i: Integration) => i.id === integrationId,
+          );
+
+          // Create new tab (addTab automatically activates it)
+          addTab({
+            type: "detail",
+            resourceUri: resourceUri,
+            title: resourceUri.split("/").pop() || "Resource",
+            icon: integration?.icon,
+          });
+        }
+      }
+    }
+  }, [chat.messages, addTab, setActiveTab, tabs, integrations]);
 
   // Format runtime error entries into a single error message (derived state)
   const formattedRuntimeError = useMemo((): RuntimeError | null => {
