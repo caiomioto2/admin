@@ -1,0 +1,77 @@
+# Docker Compose override for development environment
+# Extends docker-compose.yml with development-specific configurations
+
+version: '3.8'
+
+services:
+  # Override web service for development
+  web:
+    build:
+      target: development
+    environment:
+      - NODE_ENV=development
+      - VITE_USE_LOCAL_BACKEND=true
+      - VITE_API_URL=http://localhost:3001
+      - VITE_HOT_RELOAD=true
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - /app/apps/web/node_modules
+      - /app/packages/*/node_modules
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    ports:
+      - "3000:3000"
+    labels:
+      - "coolify.development=true"
+
+  # Override api service for development
+  api:
+    build:
+      target: development
+    environment:
+      - NODE_ENV=development
+      - LOG_LEVEL=debug
+      - CORS_ORIGIN=http://localhost:3000
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+      - /app/apps/api/node_modules
+      - /app/packages/*/node_modules
+    command: ["npm", "run", "dev"]
+    ports:
+      - "3001:3001"
+    labels:
+      - "coolify.development=true"
+
+  # Add development database by default
+  postgres:
+    profiles: []  # Remove profile restriction for development
+
+  # Add Redis for development
+  redis:
+    profiles: []  # Remove profile restriction for development
+
+  # Development tools service
+  dev-tools:
+    image: node:24-alpine
+    container_name: ${PROJECT_NAME:-decocms}-dev-tools
+    working_dir: /app
+    volumes:
+      - .:/app
+      - /app/node_modules
+    networks:
+      - app-network
+    profiles:
+      - tools
+    environment:
+      - NODE_ENV=development
+    command: ["sleep", "infinity"]
+    labels:
+      - "coolify.development=true"
+
+# Development-specific volumes
+volumes:
+  node_modules_web:
+    driver: local
+  node_modules_api:
+    driver: local

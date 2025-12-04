@@ -1,0 +1,205 @@
+# Docker Compose configuration for DecoCMS deployment on Coolify
+# Supports both development and production environments
+
+version: '3.8'
+
+services:
+  # Web Frontend Service (React/Vite + Nginx)
+  web:
+    image: ${REGISTRY_URL}/${IMAGE_NAME}:latest
+    container_name: ${PROJECT_NAME}-web
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web-production
+      cache_from:
+        - ${REGISTRY_URL}/${IMAGE_NAME}:web-cache
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - VITE_USE_LOCAL_BACKEND=${VITE_USE_LOCAL_BACKEND:-true}
+      - VITE_API_URL=http://api:${API_PORT:-3001}
+      - VITE_SUPABASE_URL=${SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    volumes:
+      - web_logs:/var/log/nginx
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${PROJECT_NAME}-web.rule=Host(`${WEB_DOMAIN:-localhost}`)"
+      - "traefik.http.routers.${PROJECT_NAME}-web.entrypoints=web"
+      - "traefik.http.services.${PROJECT_NAME}-web.loadbalancer.server.port=3000"
+      - "coolify.service.name=${PROJECT_NAME}-web"
+      - "coolify.service.type=web"
+
+  # API Backend Service (Hono/Node.js)
+  api:
+    image: ${REGISTRY_URL}/${IMAGE_NAME}:latest
+    container_name: ${PROJECT_NAME}-api
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api-production
+      cache_from:
+        - ${REGISTRY_URL}/${IMAGE_NAME}:api-cache
+    ports:
+      - "${API_PORT:-3001}:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - API_RATE_LIMIT=${API_RATE_LIMIT:-100}
+      - API_RATE_WINDOW=${API_RATE_WINDOW:-900000}
+    volumes:
+      - api_logs:/app/logs
+      - api_uploads:/app/uploads
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "node", "/app/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEMORY_LIMIT:-512M}
+          cpus: '${API_CPU_LIMIT:-0.5}'
+        reservations:
+          memory: ${API_MEMORY_RESERVATION:-256M}
+          cpus: '${API_CPU_RESERVATION:-0.25}'
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${PROJECT_NAME}-api.rule=Host(`${API_DOMAIN:-api.localhost}`)"
+      - "traefik.http.routers.${PROJECT_NAME}-api.entrypoints=api"
+      - "traefik.http.services.${PROJECT_NAME}-api.loadbalancer.server.port=3001"
+      - "coolify.service.name=${PROJECT_NAME}-api"
+      - "coolify.service.type=api"
+
+  # Database (Optional - for local development)
+  postgres:
+    image: postgres:15-alpine
+    container_name: ${PROJECT_NAME}-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-decocms}
+      - POSTGRES_USER=${POSTGRES_USER:-decocms}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-decocms} -d ${POSTGRES_DB:-decocms}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    profiles:
+      - development
+      - local-db
+
+  # Redis for caching and sessions (Optional)
+  redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME}-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - development
+      - cache
+
+  # Reverse Proxy / Load Balancer
+  traefik:
+    image: traefik:v3.1
+    container_name: ${PROJECT_NAME}-traefik
+    restart: unless-stopped
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-INFO}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt_data:/letsencrypt
+      - ./traefik:/etc/traefik:ro
+    networks:
+      - app-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${PROJECT_DOMAIN:-localhost}`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "coolify.service.name=${PROJECT_NAME}-traefik"
+      - "coolify.service.type=proxy"
+
+# Network configuration
+networks:
+  app-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET:-172.20.0.0/16}
+
+# Volume definitions
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  letsencrypt_data:
+    driver: local
+  web_logs:
+    driver: local
+  api_logs:
+    driver: local
+  api_uploads:
+    driver: local
+
+# Development override file
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.override.yml up
