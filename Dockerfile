@@ -28,14 +28,11 @@ FROM base AS dependencies
 # Enable pnpm (better for workspaces and JSR packages)
 RUN corepack enable pnpm
 
-# Copy package files for workspace setup
-COPY package.json pnpm-workspace.yaml* ./
-COPY apps/web/package.json ./apps/web/
-COPY apps/api/package.json ./apps/api/
-COPY packages/*/package.json ./packages/*/
 # Copy workspace manifests (root + apps + packages)
-COPY package.json ./
+COPY package.json pnpm-workspace.yaml ./
 COPY apps/api/package.json ./apps/api/package.json
+COPY apps/mesh/package.json ./apps/mesh/package.json
+COPY apps/outbound/package.json ./apps/outbound/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY packages/ai/package.json ./packages/ai/package.json
 COPY packages/bindings/package.json ./packages/bindings/package.json
@@ -179,6 +176,9 @@ FROM node:24-alpine AS api-production
 # Install runtime packages
 RUN apk add --no-cache curl
 
+# Provide wrangler CLI needed by dev.mjs without shipping all devDependencies
+RUN npm install -g wrangler@4.45.0
+
 # Create application user for security
 RUN addgroup -g 1001 -S nodejs && \
   adduser -S nodejs -u 1001
@@ -186,13 +186,11 @@ RUN addgroup -g 1001 -S nodejs && \
 # Set up workspace
 WORKDIR /app
 
-# Copy package files for workspace setup
-COPY package.json pnpm-workspace.yaml* ./
-COPY apps/api/package.json ./apps/api/
-COPY packages/*/package.json ./packages/*
 # Copy workspace manifests (root + apps + packages)
-COPY package.json ./
+COPY package.json pnpm-workspace.yaml ./
 COPY apps/api/package.json ./apps/api/package.json
+COPY apps/mesh/package.json ./apps/mesh/package.json
+COPY apps/outbound/package.json ./apps/outbound/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY packages/ai/package.json ./packages/ai/package.json
 COPY packages/bindings/package.json ./packages/bindings/package.json
@@ -215,8 +213,9 @@ RUN corepack enable pnpm
 # Install production dependencies
 RUN pnpm install --frozen-lockfile --prod || pnpm install --prod
 
-# Copy application files
-COPY --from=api-prep /app .
+# Copy application source files without replacing node_modules
+COPY --from=api-prep /app/apps/api ./apps/api
+COPY --from=api-prep /app/packages ./packages
 
 # Change ownership to nodejs user
 RUN chown -R nodejs:nodejs /app
