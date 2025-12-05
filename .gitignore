@@ -56,3 +56,5 @@ kv-wal
 *.db-wal
 
 dist-server/
+.env
+.env.local
